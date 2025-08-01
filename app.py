@@ -23,13 +23,14 @@ import shap
 # --- Configuration & Constants ---
 MODEL_FILE = 'isolation_forest_model.joblib'
 COLUMNS_FILE = 'model_columns.joblib'
+KNOWN_USERS_FILE = 'known_users.joblib'
+BLOCKED_IPS_FILE = 'blocked_ips.joblib'
 DATA_FILE = 'simulated_logins.csv'
 
 # --- 1. Simulated Dataset Generation ---
 def generate_simulated_data(records=2000):
     """
     Generates a realistic-looking dataset of user login activity and saves it to a CSV.
-    The dataset includes both normal and anomalous login patterns.
     """
     fake = Faker()
     data = []
@@ -114,7 +115,7 @@ def train_model(df):
     # Train the Isolation Forest model
     # contamination='auto' is a robust default. A fixed value like 0.05 (for 5% anomalies)
     # can be used if you have a strong assumption about your data.
-    model = IsolationForest(contamination='auto', random_state=42, n_estimators=100)
+    model = IsolationForest(contamination=0.2, random_state=42, n_estimators=1000)
     model.fit(df_encoded)
 
     # Save the trained model
@@ -148,9 +149,6 @@ def main():
     st.title("🛡️ Aegis: Suspicious Login Detection")
     st.write("An AI-powered app to detect anomalous user login activity using an Isolation Forest model.")
 
-    # Initialize SHAP JavaScript plots
-    shap.initjs()
-
     # --- Model Loading / Initial Training ---
     if not os.path.exists(MODEL_FILE) or not os.path.exists(COLUMNS_FILE):
         with st.spinner("First-time setup: No model found. Generating data and training a new model... This may take a minute."):
@@ -159,11 +157,10 @@ def main():
             train_model(simulated_data)
             st.success("Model trained and saved successfully!")
             time.sleep(2) # Give user time to read the message
-            st.rerun()
+            st.experimental_rerun()
     else:
         model = joblib.load(MODEL_FILE)
         model_columns = joblib.load(COLUMNS_FILE)
-        explainer = shap.TreeExplainer(model)
 
     if 'login_history' not in st.session_state:
         st.session_state.login_history = pd.DataFrame(columns=[
@@ -182,16 +179,12 @@ def main():
     new_login_data = None
 
     if input_method == "Manual Entry":
-        # The radio button must be outside the form to trigger an immediate rerun on change
-        ip_version = st.sidebar.radio("Select IP Version:", ("IPv4", "IPv6"), horizontal=True)
-
         with st.sidebar.form(key='manual_login_form'):
             username = st.text_input("Username", "john_doe")
 
-            # Dynamically set the label and placeholder based on the selection outside the form
-            label = f"Enter {ip_version} Address"
-            placeholder_ip = "e.g., 8.8.8.8" if ip_version == "IPv4" else "e.g., 2001:db8::8a2e:370:7334"
-            ip_address = st.text_input(label=label, placeholder=placeholder_ip)
+            ip_version = st.radio("Select IP Version:", ("IPv4", "IPv6"), horizontal=True)
+            default_ip = "8.8.8.8" if ip_version == "IPv4" else "2001:0db8:85a3:0000:0000:8a2e:0370:7334"
+            ip_address = st.text_input(f"Enter {ip_version} Address", default_ip)
             device_type = st.text_input("Device Type", "Chrome on Windows")
 
             submit_button = st.form_submit_button(label='Analyze Login')
@@ -233,34 +226,18 @@ def main():
         features_to_encode = ['Username', 'Device Simplified', 'Location']
         df_encoded = pd.get_dummies(df_processed, columns=features_to_encode)
         df_aligned = df_encoded.reindex(columns=model_columns, fill_value=0)
-
+        
         predictions = model.predict(df_aligned[model_columns])
         new_login_data['Prediction'] = ['Suspicious' if p == -1 else 'Normal' for p in predictions]
-
-        # Calculate SHAP values for explanations
-        shap_values = explainer.shap_values(df_aligned[model_columns])
 
         st.subheader("💡 Analysis Results")
         for index, row in new_login_data.iterrows():
             if row['Prediction'] == 'Suspicious':
-                with st.container():
-                    st.error(f"**Suspicious Login Detected!**\n"
-                             f"- **User:** {row['Username']}\n"
-                             f"- **Time:** {pd.to_datetime(row['Timestamp']).strftime('%Y-%m-%d %H:%M:%S')}\n"
-                             f"- **IP:** {row['IP Address']} ({row.get('Location (City)', 'N/A')}, {row.get('Location (Country)', 'N/A')})\n"
-                             f"- **Device:** {row['Device Type']}")
-
-                    # Add SHAP explanation plot
-                    st.write("##### Anomaly Explanation:")
-                    st.write("The plot below shows which features contributed to this login being flagged. "
-                             "Features in **red** pushed the score towards 'Suspicious', while those in **blue** pushed it towards 'Normal'.")
-
-                    shap_plot = shap.force_plot(
-                        explainer.expected_value,
-                        shap_values[index, :],
-                        df_aligned.iloc[index, :]
-                    )
-                    st.components.v1.html(shap_plot.html(), height=150, scrolling=True)
+                st.error(f"**Suspicious Login Detected!**\n"
+                         f"- **User:** {row['Username']}\n"
+                         f"- **Time:** {pd.to_datetime(row['Timestamp']).strftime('%Y-%m-%d %H:%M:%S')}\n"
+                         f"- **IP:** {row['IP Address']} ({row.get('Location (City)', 'N/A')}, {row.get('Location (Country)', 'N/A')})\n"
+                         f"- **Device:** {row['Device Type']}")
             else:
                 st.success(f"**Normal Login Verified.**\n"
                            f"- **User:** {row['Username']} at {pd.to_datetime(row['Timestamp']).strftime('%Y-%m-%d %H:%M:%S')}")
@@ -303,13 +280,18 @@ def main():
     # --- Model Management ---
     st.sidebar.markdown("---")
     st.sidebar.subheader("Model Management")
-    if st.sidebar.button("Retrain Model"):
-        with st.spinner("Retraining model with new simulated data..."):
-            simulated_data = generate_simulated_data()
-            train_model(simulated_data)
-            st.sidebar.success("Model retrained successfully!")
-            time.sleep(2)
-            st.rerun()
+    if st.sidebar.button("Retrain Model on Analyzed Data"):
+        if st.session_state.login_history.empty or len(st.session_state.login_history) < 50:
+             st.sidebar.warning(f"Not enough historical data to retrain. Need at least 50 records, have {len(st.session_state.login_history)}.")
+        else:
+            with st.spinner(f"Retraining model on {len(st.session_state.login_history)} historical login records..."):
+                # Use the actual login history to retrain the model
+                train_model(st.session_state.login_history)
+                st.sidebar.success("Model retrained on historical data!")
+                time.sleep(2)
+                # Clear history after retraining to start fresh accumulation
+                st.session_state.login_history = st.session_state.login_history.iloc[0:0]
+                st.experimental_rerun()
 
 # --- Entry point of the script ---
 if __name__ == "__main__":
