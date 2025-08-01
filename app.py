@@ -204,8 +204,21 @@ else:
     with col1:
         st.subheader("Logins by Status")
         status_counts = history_df['Status'].value_counts()
-        st.bar_chart(status_counts, color=["#ffadad", "#ffd6a5", "#a5d6a7"]) # Red, Yellow, Green
 
+        # To color bars based on category, we must format the data correctly.
+        # st.bar_chart colors by column, so we need to make each status a column.
+        color_map = {
+            "Suspicious": "#ffadad",  # Red
+            "Unknown": "#ffd6a5",     # Yellow
+            "Normal": "#a5d6a7",      # Green
+        }
+
+        # Transpose value_counts to get statuses as columns
+        chart_data = pd.DataFrame(status_counts).T
+        # Create a list of colors in the same order as the columns
+        chart_colors = [color_map.get(col, "#808080") for col in chart_data.columns]
+
+        st.bar_chart(chart_data, color=chart_colors)
     with col2:
         st.subheader("Logins by Hour of Day")
         hourly_counts = history_df['Timestamp'].dt.hour.value_counts().sort_index()
