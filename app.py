@@ -18,7 +18,6 @@ import plotly.express as px
 import requests
 from io import StringIO
 import time
-import ipaddress
 
 # --- Configuration & Constants ---
 MODEL_FILE = 'isolation_forest_model.joblib'
@@ -80,26 +79,6 @@ def generate_simulated_data(records=2000):
     df.to_csv(DATA_FILE, index=False)
     return df
 
-# --- New Helper Function for Feature Engineering ---
-def simplify_device_type(user_agent):
-    """Extracts a simplified OS and Browser from the user agent string."""
-    ua = str(user_agent).lower()
-    os = "Other"
-    if "windows" in ua: os = "Windows"
-    elif "macintosh" in ua or "mac os" in ua: os = "Mac OS"
-    elif "linux" in ua: os = "Linux"
-    elif "android" in ua: os = "Android"
-    elif "iphone" in ua or "ipad" in ua: os = "iOS"
-
-    browser = "Other"
-    if "chrome" in ua: browser = "Chrome"
-    elif "firefox" in ua: browser = "Firefox"
-    elif "safari" in ua and "chrome" not in ua: browser = "Safari"
-    elif "opera" in ua: browser = "Opera"
-    elif "msie" in ua or "trident" in ua: browser = "IE"
-    
-    return f"{browser} on {os}"
-
 # --- 2. Model Training & Feature Engineering ---
 def feature_engineering(df):
     """Converts raw data into features suitable for the model."""
@@ -109,7 +88,7 @@ def feature_engineering(df):
     df['day_of_week'] = df['Timestamp'].dt.dayofweek
 
     # Simplify the user agent string to get a more general device/browser type
-    df['Device Simplified'] = df['Device Type'].apply(simplify_device_type)
+    df['Device Simplified'] = df['Device Type'].apply(lambda x: str(x).split(')')[0].split('(')[-1].split('/')[0])
 
     # Combine location for easier encoding
     df['Location'] = df['Location (City)'].astype(str) + ", " + df['Location (Country)'].astype(str)
@@ -189,7 +168,11 @@ def main():
 
     # --- 3. Streamlit Interface for Prediction ---
     st.sidebar.header("🔎 Analyze New Login(s)")
-    input_method = st.sidebar.radio("Choose input method", ["Manual Entry", "Upload CSV"])
+    input_method = st.sidebar.radio(
+        "Choose input method:",
+        ["Manual Entry", "Upload CSV"],
+        horizontal=True
+    )
 
     new_login_data = None
 
@@ -197,38 +180,25 @@ def main():
         with st.sidebar.form(key='manual_login_form'):
             username = st.text_input("Username", "john_doe")
 
-            ip_version = st.radio("Select IP Version", ("IPv4", "IPv6"), horizontal=True)
-            
-            default_ip = "8.8.8.8" if ip_version == "IPv4" else "2001:db8::1"
+            ip_version = st.radio("Select IP Version:", ("IPv4", "IPv6"), horizontal=True)
+            default_ip = "8.8.8.8" if ip_version == "IPv4" else "2001:0db8:85a3:0000:0000:8a2e:0370:7334"
             ip_address = st.text_input(f"Enter {ip_version} Address", default_ip)
-            
             device_type = st.text_input("Device Type", "Chrome on Windows")
 
             submit_button = st.form_submit_button(label='Analyze Login')
 
             if submit_button:
-                # --- IP Address Validation ---
-                try:
-                    ip_obj = ipaddress.ip_address(ip_address)
-                    # Check if the entered version matches the selected radio button
-                    if (ip_version == "IPv4" and not isinstance(ip_obj, ipaddress.IPv4Address)) or \
-                       (ip_version == "IPv6" and not isinstance(ip_obj, ipaddress.IPv6Address)):
-                        st.sidebar.error(f"'{ip_address}' is not a valid {ip_version} address. Please check your selection.")
-                    else:
-                        # If valid, proceed with analysis
-                        with st.spinner("Fetching geolocation from IP..."):
-                            city, country = get_location_from_ip(ip_address)
-                        
-                        new_login_data = pd.DataFrame([{
-                            "Username": username,
-                            "Timestamp": pd.Timestamp.now(tz='UTC'),
-                            "IP Address": ip_address,
-                            "Device Type": device_type,
-                            "Location (City)": city,
-                            "Location (Country)": country
-                        }])
-                except ValueError:
-                    st.sidebar.error(f"Invalid IP address format: '{ip_address}'. Please enter a valid address.")
+                with st.spinner("Fetching geolocation from IP..."):
+                    city, country = get_location_from_ip(ip_address)
+
+                new_login_data = pd.DataFrame([{
+                    "Username": username,
+                    "Timestamp": pd.Timestamp.now(tz='UTC'),
+                    "IP Address": ip_address,
+                    "Device Type": device_type,
+                    "Location (City)": city,
+                    "Location (Country)": country
+                }])
 
     elif input_method == "Upload CSV":
         uploaded_file = st.sidebar.file_uploader("Choose a CSV file", type="csv")
