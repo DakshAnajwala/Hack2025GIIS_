@@ -279,7 +279,7 @@ def main():
                          f"- **Time:** {pd.to_datetime(row['Timestamp']).strftime('%Y-%m-%d %H:%M:%S')}\n"
                          f"- **IP:** {row['IP Address']} ({row.get('Location (City)', 'N/A')}, {row.get('Location (Country)', 'N/A')})\n"
                          f"- **Device:** {row['Device Type']}")
-            elif show_normal_logins:
+            else:
                 successful_logins += 1
                 # st.success(f"**Normal Login Verified.**\n"
                 #            f"- **User:** {row['Username']} at {pd.to_datetime(row['Timestamp']).strftime('%Y-%m-%d %H:%M:%S')}")
