@@ -18,19 +18,17 @@ import plotly.express as px
 import requests
 from io import StringIO
 import time
-import shap
 
 # --- Configuration & Constants ---
 MODEL_FILE = 'isolation_forest_model.joblib'
 COLUMNS_FILE = 'model_columns.joblib'
-KNOWN_USERS_FILE = 'known_users.joblib'
-BLOCKED_IPS_FILE = 'blocked_ips.joblib'
 DATA_FILE = 'simulated_logins.csv'
 
 # --- 1. Simulated Dataset Generation ---
 def generate_simulated_data(records=2000):
     """
     Generates a realistic-looking dataset of user login activity and saves it to a CSV.
+    The dataset includes both normal and anomalous login patterns.
     """
     fake = Faker()
     data = []
@@ -84,8 +82,8 @@ def generate_simulated_data(records=2000):
 # --- 2. Model Training & Feature Engineering ---
 def feature_engineering(df):
     """Converts raw data into features suitable for the model."""
-    # Ensure Timestamp is in datetime format
-    df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+    # Ensure Timestamp is in datetime format and standardized to UTC
+    df['Timestamp'] = pd.to_datetime(df['Timestamp'], utc=True)
     df['hour_of_day'] = df['Timestamp'].dt.hour
     df['day_of_week'] = df['Timestamp'].dt.dayofweek
 
@@ -115,7 +113,7 @@ def train_model(df):
     # Train the Isolation Forest model
     # contamination='auto' is a robust default. A fixed value like 0.05 (for 5% anomalies)
     # can be used if you have a strong assumption about your data.
-    model = IsolationForest(contamination=0.2, random_state=42, n_estimators=1000)
+    model = IsolationForest(contamination=0.05, random_state=42, n_estimators=100)
     model.fit(df_encoded)
 
     # Save the trained model
@@ -157,7 +155,7 @@ def main():
             train_model(simulated_data)
             st.success("Model trained and saved successfully!")
             time.sleep(2) # Give user time to read the message
-            st.experimental_rerun()
+            st.rerun()
     else:
         model = joblib.load(MODEL_FILE)
         model_columns = joblib.load(COLUMNS_FILE)
@@ -177,6 +175,7 @@ def main():
     )
 
     new_login_data = None
+    show_normal_logins = True
 
     if input_method == "Manual Entry":
         with st.sidebar.form(key='manual_login_form'):
@@ -208,6 +207,8 @@ def main():
             try:
                 stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
                 new_login_data = pd.read_csv(stringio)
+                if len(new_login_data) > 5:
+                    show_normal_logins = False
                 required_cols = {"Username", "Timestamp", "IP Address", "Device Type"}
                 if not required_cols.issubset(new_login_data.columns):
                     st.error(f"CSV must contain at least these columns: {', '.join(required_cols)}")
@@ -229,18 +230,6 @@ def main():
         
         predictions = model.predict(df_aligned[model_columns])
         new_login_data['Prediction'] = ['Suspicious' if p == -1 else 'Normal' for p in predictions]
-
-        st.subheader("💡 Analysis Results")
-        for index, row in new_login_data.iterrows():
-            if row['Prediction'] == 'Suspicious':
-                st.error(f"**Suspicious Login Detected!**\n"
-                         f"- **User:** {row['Username']}\n"
-                         f"- **Time:** {pd.to_datetime(row['Timestamp']).strftime('%Y-%m-%d %H:%M:%S')}\n"
-                         f"- **IP:** {row['IP Address']} ({row.get('Location (City)', 'N/A')}, {row.get('Location (Country)', 'N/A')})\n"
-                         f"- **Device:** {row['Device Type']}")
-            else:
-                st.success(f"**Normal Login Verified.**\n"
-                           f"- **User:** {row['Username']} at {pd.to_datetime(row['Timestamp']).strftime('%Y-%m-%d %H:%M:%S')}")
 
         st.session_state.login_history = pd.concat([new_login_data, st.session_state.login_history], ignore_index=True)
         st.session_state.login_history = st.session_state.login_history.head(1000)
@@ -277,21 +266,60 @@ def main():
                              color_discrete_map={'Suspicious':'#ff4b4b', 'Normal':'#28a745'})
             st.plotly_chart(fig_pie, use_container_width=True)
 
+    # --- Analysis Results ---
+    if new_login_data is not None and not new_login_data.empty:
+        st.subheader("💡 Analysis Results")
+        suspicious_count = 0
+        successful_logins = 0
+        for index, row in new_login_data.iterrows():
+            if row['Prediction'] == 'Suspicious':
+                suspicious_count += 1
+                st.error(f"**Suspicious Login Detected!**\n"
+                         f"- **User:** {row['Username']}\n"
+                         f"- **Time:** {pd.to_datetime(row['Timestamp']).strftime('%Y-%m-%d %H:%M:%S')}\n"
+                         f"- **IP:** {row['IP Address']} ({row.get('Location (City)', 'N/A')}, {row.get('Location (Country)', 'N/A')})\n"
+                         f"- **Device:** {row['Device Type']}")
+            elif show_normal_logins:
+                successful_logins += 1
+                # st.success(f"**Normal Login Verified.**\n"
+                #            f"- **User:** {row['Username']} at {pd.to_datetime(row['Timestamp']).strftime('%Y-%m-%d %H:%M:%S')}")
+        st.success(f"**Normal Login Verified for {successful_logins} users**\n")
+        if not show_normal_logins and suspicious_count == 0:
+            st.info("No suspicious logins were detected in the uploaded file.")
+
     # --- Model Management ---
     st.sidebar.markdown("---")
     st.sidebar.subheader("Model Management")
-    if st.sidebar.button("Retrain Model on Analyzed Data"):
-        if st.session_state.login_history.empty or len(st.session_state.login_history) < 50:
-             st.sidebar.warning(f"Not enough historical data to retrain. Need at least 50 records, have {len(st.session_state.login_history)}.")
+
+    training_data = None
+    uploaded_training_file = st.sidebar.file_uploader(
+        "Upload Training Data (CSV)",
+        type="csv",
+        help="Upload a CSV with login data to train the model. If not provided, synthetic data will be generated."
+    )
+
+    if uploaded_training_file is not None:
+        try:
+            stringio = StringIO(uploaded_training_file.getvalue().decode("utf-8"))
+            training_data = pd.read_csv(stringio)
+            st.sidebar.success(f"Successfully loaded {len(training_data)} records for training.")
+        except Exception as e:
+            st.sidebar.error(f"Error processing training file: {e}")
+            training_data = None
+
+    if st.sidebar.button("Retrain Model"):
+        if training_data is not None:
+            with st.spinner("Retraining model with uploaded data..."):
+                train_model(training_data)
+                st.sidebar.success("Model retrained successfully!")
         else:
-            with st.spinner(f"Retraining model on {len(st.session_state.login_history)} historical login records..."):
-                # Use the actual login history to retrain the model
-                train_model(st.session_state.login_history)
-                st.sidebar.success("Model retrained on historical data!")
-                time.sleep(2)
-                # Clear history after retraining to start fresh accumulation
-                st.session_state.login_history = st.session_state.login_history.iloc[0:0]
-                st.experimental_rerun()
+            with st.spinner("Retraining model with new simulated data..."):
+                simulated_data = generate_simulated_data()
+                train_model(simulated_data)
+                st.sidebar.success("Model retrained successfully!")
+        
+        time.sleep(2)
+        st.rerun()
 
 # --- Entry point of the script ---
 if __name__ == "__main__":
