@@ -18,6 +18,7 @@ import plotly.express as px
 import requests
 from io import StringIO
 import time
+import shap
 
 # --- Configuration & Constants ---
 MODEL_FILE = 'isolation_forest_model.joblib'
@@ -147,6 +148,9 @@ def main():
     st.title("🛡️ Aegis: Suspicious Login Detection")
     st.write("An AI-powered app to detect anomalous user login activity using an Isolation Forest model.")
 
+    # Initialize SHAP JavaScript plots
+    shap.initjs()
+
     # --- Model Loading / Initial Training ---
     if not os.path.exists(MODEL_FILE) or not os.path.exists(COLUMNS_FILE):
         with st.spinner("First-time setup: No model found. Generating data and training a new model... This may take a minute."):
@@ -155,10 +159,11 @@ def main():
             train_model(simulated_data)
             st.success("Model trained and saved successfully!")
             time.sleep(2) # Give user time to read the message
-            st.experimental_rerun()
+            st.rerun()
     else:
         model = joblib.load(MODEL_FILE)
         model_columns = joblib.load(COLUMNS_FILE)
+        explainer = shap.TreeExplainer(model)
 
     if 'login_history' not in st.session_state:
         st.session_state.login_history = pd.DataFrame(columns=[
@@ -224,18 +229,34 @@ def main():
         features_to_encode = ['Username', 'Device Simplified', 'Location']
         df_encoded = pd.get_dummies(df_processed, columns=features_to_encode)
         df_aligned = df_encoded.reindex(columns=model_columns, fill_value=0)
-        
+
         predictions = model.predict(df_aligned[model_columns])
         new_login_data['Prediction'] = ['Suspicious' if p == -1 else 'Normal' for p in predictions]
+
+        # Calculate SHAP values for explanations
+        shap_values = explainer.shap_values(df_aligned[model_columns])
 
         st.subheader("💡 Analysis Results")
         for index, row in new_login_data.iterrows():
             if row['Prediction'] == 'Suspicious':
-                st.error(f"**Suspicious Login Detected!**\n"
-                         f"- **User:** {row['Username']}\n"
-                         f"- **Time:** {pd.to_datetime(row['Timestamp']).strftime('%Y-%m-%d %H:%M:%S')}\n"
-                         f"- **IP:** {row['IP Address']} ({row.get('Location (City)', 'N/A')}, {row.get('Location (Country)', 'N/A')})\n"
-                         f"- **Device:** {row['Device Type']}")
+                with st.container():
+                    st.error(f"**Suspicious Login Detected!**\n"
+                             f"- **User:** {row['Username']}\n"
+                             f"- **Time:** {pd.to_datetime(row['Timestamp']).strftime('%Y-%m-%d %H:%M:%S')}\n"
+                             f"- **IP:** {row['IP Address']} ({row.get('Location (City)', 'N/A')}, {row.get('Location (Country)', 'N/A')})\n"
+                             f"- **Device:** {row['Device Type']}")
+
+                    # Add SHAP explanation plot
+                    st.write("##### Anomaly Explanation:")
+                    st.write("The plot below shows which features contributed to this login being flagged. "
+                             "Features in **red** pushed the score towards 'Suspicious', while those in **blue** pushed it towards 'Normal'.")
+
+                    shap_plot = shap.force_plot(
+                        explainer.expected_value,
+                        shap_values[index, :],
+                        df_aligned.iloc[index, :]
+                    )
+                    st.components.v1.html(shap_plot.html(), height=150, scrolling=True)
             else:
                 st.success(f"**Normal Login Verified.**\n"
                            f"- **User:** {row['Username']} at {pd.to_datetime(row['Timestamp']).strftime('%Y-%m-%d %H:%M:%S')}")
@@ -284,7 +305,7 @@ def main():
             train_model(simulated_data)
             st.sidebar.success("Model retrained successfully!")
             time.sleep(2)
-            st.experimental_rerun()
+            st.rerun()
 
 # --- Entry point of the script ---
 if __name__ == "__main__":

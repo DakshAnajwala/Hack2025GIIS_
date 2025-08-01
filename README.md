@@ -48,7 +48,7 @@ Before you begin, ensure you have Python 3.7+ installed.
 
 3.  **Install the required libraries:**
     ```bash
-    pip install streamlit pandas scikit-learn joblib faker plotly requests
+    pip install streamlit pandas scikit-learn joblib faker plotly requests shap "numpy<2.0"
     ```
 
 ---
