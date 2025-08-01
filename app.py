@@ -182,12 +182,16 @@ def main():
     new_login_data = None
 
     if input_method == "Manual Entry":
+        # The radio button must be outside the form to trigger an immediate rerun on change
+        ip_version = st.sidebar.radio("Select IP Version:", ("IPv4", "IPv6"), horizontal=True)
+
         with st.sidebar.form(key='manual_login_form'):
             username = st.text_input("Username", "john_doe")
 
-            ip_version = st.radio("Select IP Version:", ("IPv4", "IPv6"), horizontal=True)
-            default_ip = "8.8.8.8" if ip_version == "IPv4" else "2001:0db8:85a3:0000:0000:8a2e:0370:7334"
-            ip_address = st.text_input(f"Enter {ip_version} Address", default_ip)
+            # Dynamically set the label and placeholder based on the selection outside the form
+            label = f"Enter {ip_version} Address"
+            placeholder_ip = "e.g., 8.8.8.8" if ip_version == "IPv4" else "e.g., 2001:db8::8a2e:370:7334"
+            ip_address = st.text_input(label=label, placeholder=placeholder_ip)
             device_type = st.text_input("Device Type", "Chrome on Windows")
 
             submit_button = st.form_submit_button(label='Analyze Login')
